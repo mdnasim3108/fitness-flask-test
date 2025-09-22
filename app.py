@@ -2,6 +2,10 @@ from flask import Flask, request, jsonify
 import requests
 from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
+from googleapiclient.discovery import build
+import io
+from googleapiclient.http import MediaIoBaseDownload
+from google.cloud import storage
 
 
 app = Flask(__name__)
@@ -12,30 +16,45 @@ def chat_webhook():
     
     attachment=event["chat"]["messagePayload"]["message"]["attachment"]
     
-    resource_name=attachment[0]["attachmentDataRef"]["resourceName"]
-    
-    attachment_url = f"https://chat.googleapis.com/v1/{resource_name}?alt=media"
-    
+    resource_name=attachment[0]["name"]
+        
     
     SCOPES = ["https://www.googleapis.com/auth/chat.bot"]
-    SERVICE_ACCOUNT_FILE = "snapfit-9efb-1081c5d4c2ee.json"
+    SERVICE_ACCOUNT_FILE = "snapfit-9efb-71568e26bf3f.json"
 
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE, scopes=SCOPES
     )
-    authed_session = AuthorizedSession(creds)
+    chat = build("chat", "v1", credentials=creds)
+    
+    attachment = chat.spaces().messages().attachments().get(name=resource_name).execute()
 
-    resp = authed_session.get(attachment_url)
+    media_resource = attachment["attachmentDataRef"]["resourceName"]
 
-    if resp.status_code == 200:
-        with open("image.png", "wb") as f:
-            f.write(resp.content)
-        print("Image downloaded successfully")
-    else:
-        print("Failed:", resp.status_code, resp.text)   
+    download_request = chat.media().download_media(
+        resourceName=media_resource
+    )  
 
-    return jsonify({"text": f"We got your image in our system"})
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, download_request)
+
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+        if status:
+            print("Download %d%%." % int(status.progress() * 100))
+            
+    fh.seek(0)
+
+    client = storage.Client.from_service_account_json("snapfit-9efb-71568e26bf3f.json")
+
+    bucket = client.bucket("gchat-image-dump")
+    blob = bucket.blob("images/downloaded.jpg")
+    blob.upload_from_file(fh, rewind=True,content_type="image/jpeg")
+
+    print(f"✅ Uploaded to gs://gchat-image-dump")
         
+    return "gs://gchat-image-dump/images/"
     
     
     
